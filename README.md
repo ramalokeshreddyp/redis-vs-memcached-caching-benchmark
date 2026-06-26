@@ -1,159 +1,215 @@
-# Redis vs Memcached: Comparative Caching Layer
+# Comparative Caching Layers: Redis 7 vs Memcached 1.6
 
-A high-performance Product Catalog API proxy designed to compare and benchmark **Redis 7** and **Memcached 1.6** caching patterns. This project implements five complex caching patterns, manages in-memory data structures, implements distributed locking, and provides a comparative performance and consistency analysis.
+A production-grade, high-performance Product Catalog API proxy demonstrating and comparing advanced in-memory caching patterns. This system implements identical business requirements across both **Redis 7** and **Memcached 1.6** caches to analyze their differences in raw performance, consistency guarantees, concurrency handling, and memory footprint.
 
 ---
 
-## 1. System Architecture
+## 🚀 Tech Stack
 
-The microservice acts as an API proxy that dynamically switches between cache backends based on the `X-Cache-Backend` header (values: `redis` or `memcached`).
+*   **Runtime Environment**: Node.js (v22.x, Alpine Linux)
+*   **Language**: TypeScript (v5.x)
+*   **Framework**: Express (v4.x)
+*   **Database**: PostgreSQL 15 (seeded with 100,000 products, each payload ~2KB)
+*   **Caching Systems**:
+    *   **Redis 7.0**: Used for atomic sorted sets, multi-field hash mapping, and Lua scripting.
+    *   **Memcached 1.6**: Used for high-throughput multi-threaded string storage, slab allocation, and namespace versioning.
+*   **Orchestration**: Docker & Docker Compose
+*   **Benchmarking Tools**: `memtier_benchmark` (RedisLabs), Python 3 concurrent thread engines.
 
+---
+
+## 📂 Project Structure
+
+```text
+redis-vs-memcached-caching-benchmark/
+├── .env.example            # Blueprint for environment configuration
+├── .gitignore              # Files ignored by git (node_modules, .env, dist)
+├── Dockerfile              # Multi-stage production container build
+├── README.md               # User guide & performance analysis
+├── architecture.md         # Detailed system design & cache topologies
+├── projectdocumentation.md # Feature descriptions & testing validation
+├── docker-compose.yml      # Orchestrates Postgres, Redis, Memcached, and App
+├── package.json            # npm package dependencies and build tasks
+├── tsconfig.json           # TypeScript compilation options
+├── db-init/
+│   └── init.sql            # Seeding script creating 100,000 product rows
+├── results/
+│   ├── redis_bench.txt     # Raw memtier_benchmark output for Redis
+│   └── memcached_bench.txt # Raw memtier_benchmark output for Memcached
+├── scripts/
+│   ├── run_benchmarks.ps1  # Automated PowerShell benchmark runner
+│   ├── seed_caches.js      # Bulk database-to-cache warming script
+│   └── verify_consistency.py # Multi-threaded Python race-condition testing suite
+├── src/
+│   ├── index.ts            # Bootstraps Express and opens invalidation Pub/Sub listeners
+│   ├── app.ts              # API routers and business endpoints
+│   ├── config.ts           # Type-safe environment loader
+│   ├── db.ts               # Postgres Connection pool management
+│   ├── cache/
+│   │   ├── base.ts         # Unified interface contract (ICacheBackend)
+│   │   ├── factory.ts      # Selects active cache using request headers
+│   │   ├── redis.ts        # Redis wrapper (Lua limiter, ZSET leader, HGETALL sessions)
+│   │   └── memcached.ts    # Memcached wrapper (Lock-protected leaderboard, versioning)
+│   ├── middleware/
+│   │   └── rate-limiter.ts # API Proxy rate-limiting gateway
+│   └── types/
+│       └── memjs.d.ts      # TypeScript declarations for the memjs library
+└── submission.json         # Structured benchmark statistics for automated comparison
 ```
-                     +---------------------------------------+
-                     |  Load Generator (Locust / memtier)    |
-                     +---------------------------------------+
-                                         |
-                                         v [HTTP Headers / JSON]
-                     +---------------------------------------+
-                     |       Product Catalog API Proxy       |
-                     |       (Node.js / Express / TS)        |
-                     +---------------------------------------+
-                        /                |                \
-    [ZSET/Lua/HSET/DEL] /                | [Get/Set/Lock]  \ [SQL]
-                       v                 v                  v
-              +---------------+  +---------------+  +---------------+
-              |    Redis 7    |  | Memcached 1.6 |  |  PostgreSQL   |
-              |    Server     |  |    Server     |  |   Database    |
-              +---------------+  +---------------+  +---------------+
+
+---
+
+## 📈 System Flow & Execution Diagrams
+
+### 1. Request Routing & Caching Flow (GET `/products/:id`)
+This diagram shows how requests route through the proxy middleware to PostgreSQL or the selected active caching layer.
+
+```mermaid
+graph TD
+    A[Client Request] --> B[Proxy Rate Limiter Middleware]
+    B -->|Allowed| C{Read X-Cache-Backend Header}
+    B -->|Exceeded| D[HTTP 429 Too Many Requests]
+    C -->|redis| E{Query Redis key: product:id}
+    C -->|memcached| F{Query Memcached key: product:v:id}
+    
+    E -->|Cache Hit| G[Return cached JSON - X-Cache: HIT]
+    E -->|Cache Miss| H[Query PostgreSQL Database]
+    F -->|Cache Hit| G
+    F -->|Cache Miss| H
+    
+    H -->|Not Found| I[Return HTTP 404]
+    H -->|Found| J[Serialize JSON & warm Cache]
+    J --> K[Return JSON - X-Cache: MISS]
+```
+
+### 2. Distributed Locking Workflow (POST `/products/:id/view`)
+To avoid race conditions on the leaderboard update in Memcached (which lacks native sorting), the proxy acquires a distributed lock before updating the serialized list.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant Proxy as Catalog API
+    participant Cache as Memcached 1.6
+    
+    Client->>Proxy: POST /products/500/view (Backend: memcached)
+    activate Proxy
+    Proxy->>Cache: ADD lock:leaderboard "locked" (expires 5s)
+    activate Cache
+    Cache-->>Proxy: Lock acquired successfully (true)
+    deactivate Cache
+    
+    Proxy->>Cache: GET leaderboard:views
+    activate Cache
+    Cache-->>Proxy: Return JSON leaderboard list
+    deactivate Cache
+    
+    Proxy->>Proxy: Update view count & sort list in-memory
+    Proxy->>Cache: SET leaderboard:views [new_list]
+    activate Cache
+    Cache-->>Proxy: Saved successfully
+    deactivate Cache
+    
+    Proxy->>Cache: DELETE lock:leaderboard
+    activate Cache
+    Cache-->>Proxy: Lock released
+    deactivate Cache
+    
+    Proxy-->>Client: Return HTTP 200 (Success)
+    deactivate Proxy
 ```
 
 ---
 
-## 2. Implemented Caching Patterns
+## 🛠️ Setup and Installation
 
-### Phase A: Basic Caching & Sessions
-*   **Product Metadata Caching**: On `GET /products/:id`, the proxy checks the active cache. On a miss, it queries PostgreSQL, caches the serialized JSON product (~2KB) with a 300-second TTL, and returns it.
-*   **User Sessions**:
-    *   **Redis**: Uses Hashes (`HSET`/`HGETALL`), allowing single-field updates (e.g., modifying `last_login`) without re-serializing the entire session.
-    *   **Memcached**: Stores the entire session as a serialized JSON string. Updates require fetching, deserializing, modifying, and re-saving the entire session object.
-
-### Phase B: Leaderboard (Most Viewed Products)
-*   **Redis**: Implements sorting natively using a Sorted Set (`ZSET`) via `ZINCRBY` (atomic updates) and `ZREVRANGE` (retrieving the top 10).
-*   **Memcached**: Since Memcached lacks native sorting, the leaderboard is stored as a serialized JSON array under a single key. To avoid race conditions, a distributed lock is acquired using Memcached `add` (binary protocol). If the lock is held, requests retry with exponential backoff.
-
-### Phase C: Distributed Rate Limiting
-Enforces a per-user rate limit of 100 requests per minute.
-*   **Redis**: Uses an atomic Lua script (`INCR` + `EXPIRE` in a single event-loop cycle) to prevent race conditions.
-*   **Memcached**: Uses binary `incr`. If the key is missing, it initializes the key atomically to `1` using `add` with a 60-second TTL. If `add` fails due to concurrency, it retries the increment.
-
-### Phase D: Cache Invalidation
-*   **Redis**: Uses a Pub/Sub broadcast channel `product:invalidations` to notify all active API instances to invalidate internal state.
-*   **Memcached**: Implements **Cache Versioning**. A global version key `product:global_version` is incremented upon product updates. Subsequent product lookups use the new version in their key prefix (`product:v<version>:<id>`), immediately invalidating all old entries.
-
----
-
-## 3. Environment Setup & Execution
-
-### Prerequisites
-- Docker & Docker Compose
-- Python 3.x (to run consistency tests)
-- Node.js (v22.x) & npm (optional, for local development)
-
-### Step 1: Clone and Configure Environment
-Copy `.env.example` to `.env`:
+### 1. Configure the Environment
+Clone the project repository and copy the environment template:
 ```bash
 cp .env.example .env
 ```
 
-### Step 2: Start Services
-Start the entire stack in the background:
+### 2. Spin Up Containers
+Launch PostgreSQL, Redis, Memcached, and the Node application together:
 ```bash
 docker compose up --build -d
 ```
-*The `catalog_app` container depends on database health. The database is considered healthy only after the entrypoint SQL script finishes seeding exactly **100,000 product rows** (this may take up to 20-30 seconds).*
+*Note: The API container is configured to wait until the PostgreSQL database container health check passes (which checks that exactly **100,000 product rows** have been seeded).*
 
-### Step 3: Verify Status
-Check container health:
+### 3. Verify Seeding & Status
+Confirm all containers are healthy and running:
 ```bash
 docker ps
 ```
-You should see all containers (`catalog_app`, `catalog_db`, `catalog_redis`, `catalog_memcached`) in a healthy state.
-
----
-
-## 4. Benchmark Suite
-
-We run `memtier_benchmark` using official Docker images to compare raw throughput and latency across both caching engines under Gaussian key distributions and a 9:1 Read/Write ratio.
-
-### Running Benchmarks
-On Windows (PowerShell):
-```powershell
-powershell -File scripts/run_benchmarks.ps1
-```
-On Linux / Git Bash:
+Verify the number of products seeded in Postgres:
 ```bash
-bash run_benchmarks.sh
+docker exec -it catalog_db psql -U postgres -d catalog -c "SELECT COUNT(*) FROM products;"
 ```
-
-Raw benchmark statistics are saved under the `results/` directory:
-- `results/redis_bench.txt`
-- `results/memcached_bench.txt`
-
-### Benchmark Analysis (Pipeline Depth Comparison)
-
-| Caching Backend | Pipeline Depth | Throughput (Ops/sec) | Avg Latency (ms) | p99 Latency (ms) |
-| :--- | :--- | :--- | :--- | :--- |
-| **Redis 7** | 1 | 81,154 | 0.147 | 0.383 |
-| **Memcached 1.6** | 1 | 183,862 | 54.27* | 0.279 |
-| **Redis 7** | 10 | 829,015 | 0.240 | 0.567 |
-| **Memcached 1.6** | 10 | 1,392,234 | 0.143 | 0.391 |
-| **Redis 7** | 50 | 1,419,990 | 0.695 | 1.463 |
-| **Memcached 1.6** | 50 | 1,707,023 | 0.565 | 1.407 |
-
-*\*Note: The Pipeline 1 average latency for Memcached was skewed by connection handshakes at start, but percentile metrics (p50: 0.103ms, p99: 0.279ms) indicate typical performance is faster.*
-
-**Key Takeaways:**
-1. **Raw Performance**: Memcached consistently achieves higher throughput (Ops/sec) and lower p99 latency than Redis across all pipelining depths due to its multi-threaded architecture.
-2. **Pipelining Efficiency**: Pipelining significantly improves throughput for both systems, scaling performance by over 10x as depth increases from 1 to 10.
+*(Should return exactly `100000`).*
 
 ---
 
-## 5. Consistency & Concurrency Tests
+## 💻 API Usage & Verification
 
-The project includes a Python test script `scripts/verify_consistency.py` that spawns concurrent threads to verify atomicity guarantees under load.
+All endpoints dynamically route commands to Redis or Memcached based on the `X-Cache-Backend` header.
 
-### Running Consistency Verification
-Ensure your containers are running, then execute:
+### 1. Get Product Details (GET `/products/:id`)
+Fetches product details (returns ~2KB payload).
+```bash
+# Redis Backend (MISS on first try, HIT on subsequent requests)
+curl -i -H "X-Cache-Backend: redis" http://localhost:3000/products/100
+
+# Memcached Backend
+curl -i -H "X-Cache-Backend: memcached" http://localhost:3000/products/100
+```
+
+### 2. Update Product (POST `/products/:id`)
+Updates product in Postgres and invalidates the cache (triggers Redis Pub/Sub broadcast, or increments Memcached global version key).
+```bash
+# PowerShell invocation avoiding command-line quote expansions
+Invoke-RestMethod -Method Post -Uri "http://localhost:3000/products/100" -Headers @{"X-Cache-Backend"="redis"} -ContentType "application/json" -Body '{"name":"Premium Updated Item"}'
+```
+
+### 3. Update & Read Leaderboard
+```bash
+# Register a view
+curl -i -X POST http://localhost:3000/products/100/view
+
+# Fetch top 10 most viewed items
+curl -i http://localhost:3000/leaderboard
+```
+
+### 4. Manage User Sessions
+```bash
+# Update last_login field in session 550
+Invoke-RestMethod -Method Post -Uri "http://localhost:3000/session/550" -Headers @{"X-Cache-Backend"="redis"} -ContentType "application/json" -Body '{"field":"last_login", "value":"2026-06-26T12:00:00Z"}'
+
+# Fetch session details
+curl -i http://localhost:3000/session/550
+```
+
+---
+
+## ⚡ Performance & Consistency Verification
+
+### 1. Benchmarking Suite
+We automate `memtier_benchmark` runs using docker containers to benchmark both caching backends.
+*   **On Windows (PowerShell)**:
+    ```powershell
+    powershell -File scripts/run_benchmarks.ps1
+    ```
+*   **On Linux / Git Bash**:
+    ```bash
+    bash run_benchmarks.sh
+    ```
+*The metrics are compiled in `results/redis_bench.txt` and `results/memcached_bench.txt`.*
+
+### 2. Concurrency & Race Condition Tests
+We run concurrent threads executing leaderboard views and rate limiter requests to prove caching guarantees:
 ```bash
 python scripts/verify_consistency.py
 ```
-
-### Consistency Analysis
-
-*   **Rate Limiter Test**: Sends 105 rapid requests. Both Redis and Memcached block requests beyond 100 with HTTP 429.
-*   **Leaderboard Concurrency Test**: Spawns 10 parallel clients doing 100 increments each (1,000 total).
-    *   **Redis ZSET**: Native event-loop serialization guarantees **0 lost increments**.
-    *   **Memcached with Lock**: Lock-protected get-modify-set ensures **0 lost increments**.
-    *   **Memcached without Lock**: Concurrent get-modify-set operations collide, leading to **lost increments** (typically ~20-60 lost).
-
----
-
-## 6. Memory Comparison Table
-
-We stored exactly **100,000 product objects** (each serialized as a JSON string of size **2,006 bytes**) to compare memory efficiency.
-
-| Storage Backend | Reported Used Memory (MB) | Overhead per Key (Bytes) |
-| :--- | :---: | :---: |
-| **Redis 7** | 216.27 | 147.4 |
-| **Memcached 1.6** | 199.18 | 82.6 |
-
-### Overhead Math
-- **Raw Data Size**: 2,006 bytes.
-- **Memcached Overhead**:
-  $$\frac{208,857,643\text{ bytes (total memory)}}{100,000\text{ keys}} = 2,088.6\text{ bytes/key}$$
-  $$\text{Overhead} = 2,088.6 - 2,006 = 82.6\text{ bytes/key}$$
-- **Redis Overhead** (excluding startup footprint of 948,424 bytes):
-  $$\frac{216,294,064 - 948,424\text{ bytes}}{100,000\text{ keys}} = 2,153.4\text{ bytes/key}$$
-  $$\text{Overhead} = 2,153.4 - 2,006 = 147.4\text{ bytes/key}$$
-
-**Analysis**: Redis incurs **78% higher memory overhead per key** than Memcached. This is because Redis allocates additional pointer graphs and metadata for its advanced dictionary and data structures, while Memcached utilizes a simple Slab Allocator designed strictly for flat strings.
+This script populates `submission.json` and outputs:
+*   **Redis ZSET**: 0 lost increments (atomic Sorted Sets).
+*   **Memcached with Lock**: 0 lost increments (distributed locking).
+*   **Memcached without Lock**: ~30-60 lost increments (concurrency race condition).
