@@ -6,6 +6,11 @@ import { rateLimiterMiddleware } from './middleware/rate-limiter';
 const app = express();
 app.use(express.json());
 
+// 0. GET /health - Service health check (placed before rate limiter middleware)
+app.get('/health', (req: Request, res: Response) => {
+  res.json({ status: 'ok' });
+});
+
 // Application level rate limiting middleware applied to all routes
 app.use(rateLimiterMiddleware);
 

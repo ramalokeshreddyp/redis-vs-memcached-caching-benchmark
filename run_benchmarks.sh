@@ -13,7 +13,7 @@ for pipeline in 1 10 50; do
   echo "Pipeline Depth: ${pipeline}" >> results/redis_bench.txt
   echo "--------------------------------------------------------" >> results/redis_bench.txt
   
-  docker run --rm --network gpp-25_default redislabs/memtier_benchmark \
+  docker run --rm --network caching_benchmark_network redislabs/memtier_benchmark \
     -s redis \
     -p 6379 \
     --protocol=redis \
@@ -36,7 +36,7 @@ for pipeline in 1 10 50; do
   echo "Pipeline Depth: ${pipeline}" >> results/memcached_bench.txt
   echo "--------------------------------------------------------" >> results/memcached_bench.txt
   
-  docker run --rm --network gpp-25_default redislabs/memtier_benchmark \
+  docker run --rm --network caching_benchmark_network redislabs/memtier_benchmark \
     -s memcached \
     -p 11211 \
     --protocol=memcache_binary \

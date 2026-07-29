@@ -213,3 +213,12 @@ This script populates `submission.json` and outputs:
 *   **Redis ZSET**: 0 lost increments (atomic Sorted Sets).
 *   **Memcached with Lock**: 0 lost increments (distributed locking).
 *   **Memcached without Lock**: ~30-60 lost increments (concurrency race condition).
+
+---
+
+## Memory Comparison
+
+| Storage Backend | Reported Used Memory (MB) | Overhead per Key (Bytes) |
+| :--- | :--- | :--- |
+| Redis 7.0 | 216.27 | 147.4 |
+| Memcached 1.6 | 199.18 | 82.6 |

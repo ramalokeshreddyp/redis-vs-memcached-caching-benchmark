@@ -13,7 +13,7 @@ foreach ($p in 1, 10, 50) {
   "Pipeline Depth: $p" | Out-File -FilePath results/redis_bench.txt -Append -Encoding utf8
   "--------------------------------------------------------" | Out-File -FilePath results/redis_bench.txt -Append -Encoding utf8
   
-  docker run --rm --network gpp-25_default redislabs/memtier_benchmark `
+  docker run --rm --network caching_benchmark_network redislabs/memtier_benchmark `
     -s redis `
     -p 6379 `
     --protocol=redis `
@@ -37,7 +37,7 @@ foreach ($p in 1, 10, 50) {
   "Pipeline Depth: $p" | Out-File -FilePath results/memcached_bench.txt -Append -Encoding utf8
   "--------------------------------------------------------" | Out-File -FilePath results/memcached_bench.txt -Append -Encoding utf8
   
-  docker run --rm --network gpp-25_default redislabs/memtier_benchmark `
+  docker run --rm --network caching_benchmark_network redislabs/memtier_benchmark `
     -s memcached `
     -p 11211 `
     --protocol=memcache_binary `
