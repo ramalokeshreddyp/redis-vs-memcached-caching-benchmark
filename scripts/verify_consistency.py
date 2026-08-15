@@ -152,42 +152,58 @@ def main():
     
     # Parse benchmark statistics from file
     # Let's read these from the results folder
-    redis_ops = 81154
-    redis_p99 = 0.383
-    memcached_ops = 183862
-    memcached_p99 = 0.279
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
     
+    redis_bench_path = os.path.join(project_root, "results", "redis_bench.txt")
+    memcached_bench_path = os.path.join(project_root, "results", "memcached_bench.txt")
+
+    if not os.path.exists(redis_bench_path):
+        raise RuntimeError(f"Redis benchmark file not found at: {redis_bench_path}")
+    if not os.path.exists(memcached_bench_path):
+        raise RuntimeError(f"Memcached benchmark file not found at: {memcached_bench_path}")
+
     try:
-        if os.path.exists("results/redis_bench.txt"):
-            with open("results/redis_bench.txt", "r", encoding="utf-8") as f:
-                content = f.read()
-                # Parse totals ops/sec and p99 from the first run (Pipeline Depth: 1)
-                # Look for Totals line in the ALL STATS table of Pipeline Depth: 1
-                if "Pipeline Depth: 1" in content:
-                    part = content.split("Pipeline Depth: 1")[1].split("Pipeline Depth: 10")[0]
-                    for line in part.split("\n"):
-                        if "Totals" in line:
-                            parts = [p for p in line.split(" ") if p]
-                            redis_ops = float(parts[1])
-                            redis_p99 = float(parts[6])
-                            break
+        with open(redis_bench_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            # Parse totals ops/sec and p99 from the first run (Pipeline Depth: 1)
+            # Look for Totals line in the ALL STATS table of Pipeline Depth: 1
+            if "Pipeline Depth: 1" in content:
+                part = content.split("Pipeline Depth: 1")[1].split("Pipeline Depth: 10")[0]
+                found = False
+                for line in part.split("\n"):
+                    if "Totals" in line:
+                        parts = [p for p in line.split(" ") if p]
+                        redis_ops = float(parts[1])
+                        redis_p99 = float(parts[6])
+                        found = True
+                        break
+                if not found:
+                    raise ValueError("Totals row not found under Pipeline Depth: 1 in Redis benchmark file.")
+            else:
+                raise ValueError("Pipeline Depth: 1 section not found in Redis benchmark file.")
     except Exception as e:
-        print("Error parsing Redis benchmark file:", e)
-        
+        raise RuntimeError(f"Error parsing Redis benchmark file: {e}")
+
     try:
-        if os.path.exists("results/memcached_bench.txt"):
-            with open("results/memcached_bench.txt", "r", encoding="utf-8") as f:
-                content = f.read()
-                if "Pipeline Depth: 1" in content:
-                    part = content.split("Pipeline Depth: 1")[1].split("Pipeline Depth: 10")[0]
-                    for line in part.split("\n"):
-                        if "Totals" in line:
-                            parts = [p for p in line.split(" ") if p]
-                            memcached_ops = float(parts[1])
-                            memcached_p99 = float(parts[6])
-                            break
+        with open(memcached_bench_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            if "Pipeline Depth: 1" in content:
+                part = content.split("Pipeline Depth: 1")[1].split("Pipeline Depth: 10")[0]
+                found = False
+                for line in part.split("\n"):
+                    if "Totals" in line:
+                        parts = [p for p in line.split(" ") if p]
+                        memcached_ops = float(parts[1])
+                        memcached_p99 = float(parts[6])
+                        found = True
+                        break
+                if not found:
+                    raise ValueError("Totals row not found under Pipeline Depth: 1 in Memcached benchmark file.")
+            else:
+                raise ValueError("Pipeline Depth: 1 section not found in Memcached benchmark file.")
     except Exception as e:
-        print("Error parsing Memcached benchmark file:", e)
+        raise RuntimeError(f"Error parsing Memcached benchmark file: {e}")
         
     # Write submission.json
     submission = {
